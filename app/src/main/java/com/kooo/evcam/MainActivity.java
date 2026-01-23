@@ -340,7 +340,7 @@ public class MainActivity extends AppCompatActivity {
                         Log.d(TAG, "设置 " + cameraKey + " 宽高比(旋转后): " + previewSize.getHeight() + ":" + previewSize.getWidth());
 
                         // 应用旋转变换（修正倒立问题）
-                        int rotation = "left".equals(cameraKey) ? 90 : 270;  // 左顺时针90度(90)，右逆时针90度(270)
+                        int rotation = "left".equals(cameraKey) ? 270 : 90;  // 左顺时针270度(270)，右顺时针90度(90)
                         applyRotationTransform(textureView, previewSize, rotation, cameraKey);
                     } else {
                         // 前后摄像头：使用原始宽高比（1280x800，横向）
