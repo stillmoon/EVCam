@@ -4,6 +4,7 @@ package com.kooo.evcam;
 import com.kooo.evcam.AppLog;
 import android.Manifest;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraManager;
@@ -12,6 +13,7 @@ import android.os.Bundle;
 import android.util.Log;
 import android.view.TextureView;
 import android.view.View;
+import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -71,6 +73,9 @@ public class MainActivity extends AppCompatActivity {
     private MultiCameraManager cameraManager;
     private int textureReadyCount = 0;  // 记录准备好的TextureView数量
     private boolean isRecording = false;  // 录制状态标志
+    private boolean isInBackground = false;  // 是否在后台
+    private boolean pendingRemoteCommand = false;  // 是否有待处理的远程命令
+    private boolean isRemoteWakeUp = false;  // 是否是远程命令唤醒的（用于完成后自动退回后台）
 
     // 录制按钮闪烁动画相关
     private android.os.Handler blinkHandler;
@@ -131,6 +136,89 @@ public class MainActivity extends AppCompatActivity {
         // 如果启用了自动启动，启动钉钉服务
         if (dingTalkConfig.isConfigured() && dingTalkConfig.isAutoStart()) {
             startDingTalkService();
+        }
+
+        // 检查是否有启动时传入的远程命令（冷启动）
+        handleRemoteCommandFromIntent(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        AppLog.d(TAG, "onNewIntent called");
+        
+        // 处理远程命令
+        handleRemoteCommandFromIntent(intent);
+    }
+
+    /**
+     * 处理来自 Intent 的远程命令
+     * 由 WakeUpHelper 启动时传入
+     */
+    private void handleRemoteCommandFromIntent(Intent intent) {
+        if (intent == null) {
+            return;
+        }
+
+        String action = intent.getStringExtra("remote_action");
+        if (action == null || action.isEmpty()) {
+            return;
+        }
+
+        AppLog.d(TAG, "Received remote command from intent: " + action);
+
+        // 提取参数
+        String conversationId = intent.getStringExtra("remote_conversation_id");
+        String conversationType = intent.getStringExtra("remote_conversation_type");
+        String userId = intent.getStringExtra("remote_user_id");
+        int duration = intent.getIntExtra("remote_duration", 60);
+
+        // 清除 Intent 中的命令，避免重复执行
+        intent.removeExtra("remote_action");
+
+        // 标记有待处理的远程命令
+        pendingRemoteCommand = true;
+        
+        // 标记这是远程唤醒，完成后需要自动退回后台
+        isRemoteWakeUp = true;
+        AppLog.d(TAG, "Remote wake-up flag set, will return to background after completion");
+
+        // 延迟执行命令，等待摄像头准备好
+        // 如果从后台唤醒，摄像头需要时间重新连接
+        int delay = isInBackground ? 2000 : 1500;
+        
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+            pendingRemoteCommand = false;
+            
+            // 检查摄像头是否准备好
+            if (cameraManager == null || !cameraManager.hasConnectedCameras()) {
+                AppLog.w(TAG, "Cameras not ready, waiting longer...");
+                // 再等待1秒
+                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                    executeRemoteCommand(action, conversationId, conversationType, userId, duration);
+                }, 1000);
+            } else {
+                executeRemoteCommand(action, conversationId, conversationType, userId, duration);
+            }
+        }, delay);
+    }
+
+    /**
+     * 执行远程命令
+     */
+    private void executeRemoteCommand(String action, String conversationId, 
+            String conversationType, String userId, int duration) {
+        AppLog.d(TAG, "Executing remote command: " + action);
+        
+        if ("record".equals(action)) {
+            AppLog.d(TAG, "Starting remote recording for " + duration + " seconds");
+            startRemoteRecording(conversationId, conversationType, userId, duration);
+        } else if ("photo".equals(action)) {
+            AppLog.d(TAG, "Taking remote photo");
+            startRemotePhoto(conversationId, conversationType, userId);
+        } else {
+            AppLog.w(TAG, "Unknown remote action: " + action);
         }
     }
 
@@ -789,6 +877,7 @@ public class MainActivity extends AppCompatActivity {
         if (cameraManager == null) {
             AppLog.e(TAG, "摄像头管理器未初始化");
             sendErrorToRemote("摄像头未初始化");
+            returnToBackgroundIfRemoteWakeUp();
             return;
         }
 
@@ -796,6 +885,7 @@ public class MainActivity extends AppCompatActivity {
         if (!cameraManager.hasConnectedCameras()) {
             AppLog.e(TAG, "没有可用的相机");
             sendErrorToRemote("没有可用的相机（可能在后台被限制）");
+            returnToBackgroundIfRemoteWakeUp();
             return;
         }
 
@@ -840,6 +930,7 @@ public class MainActivity extends AppCompatActivity {
         } else {
             AppLog.e(TAG, "远程录制启动失败");
             sendErrorToRemote("录制启动失败");
+            returnToBackgroundIfRemoteWakeUp();
         }
     }
 
@@ -858,6 +949,7 @@ public class MainActivity extends AppCompatActivity {
         if (cameraManager == null) {
             AppLog.e(TAG, "摄像头管理器未初始化");
             sendErrorToRemote("摄像头未初始化");
+            returnToBackgroundIfRemoteWakeUp();
             return;
         }
 
@@ -865,6 +957,7 @@ public class MainActivity extends AppCompatActivity {
         if (!cameraManager.hasConnectedCameras()) {
             AppLog.e(TAG, "没有可用的相机");
             sendErrorToRemote("没有可用的相机（可能在后台被限制）");
+            returnToBackgroundIfRemoteWakeUp();
             return;
         }
 
@@ -894,6 +987,7 @@ public class MainActivity extends AppCompatActivity {
         if (remoteRecordingTimestamp == null || remoteRecordingTimestamp.isEmpty()) {
             AppLog.e(TAG, "录制时间戳为空，无法查找视频文件");
             sendErrorToRemote("录制失败：时间戳丢失");
+            returnToBackgroundIfRemoteWakeUp();
             return;
         }
 
@@ -904,6 +998,7 @@ public class MainActivity extends AppCompatActivity {
         if (!videoDir.exists() || !videoDir.isDirectory()) {
             AppLog.e(TAG, "视频目录不存在");
             sendErrorToRemote("视频目录不存在");
+            returnToBackgroundIfRemoteWakeUp();
             return;
         }
 
@@ -915,6 +1010,7 @@ public class MainActivity extends AppCompatActivity {
         if (files == null || files.length == 0) {
             AppLog.e(TAG, "没有找到时间戳为 " + remoteRecordingTimestamp + " 的视频文件（录制可能失败）");
             sendErrorToRemote("录制失败：未生成视频文件");
+            returnToBackgroundIfRemoteWakeUp();
             return;
         }
 
@@ -937,18 +1033,25 @@ public class MainActivity extends AppCompatActivity {
                 @Override
                 public void onSuccess(String message) {
                     AppLog.d(TAG, message);
-                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "视频上传成功", Toast.LENGTH_SHORT).show());
+                    runOnUiThread(() -> {
+                        Toast.makeText(MainActivity.this, "视频上传成功", Toast.LENGTH_SHORT).show();
+                        // 上传完成后自动退回后台
+                        returnToBackgroundIfRemoteWakeUp();
+                    });
                 }
 
                 @Override
                 public void onError(String error) {
                     AppLog.e(TAG, "上传失败: " + error);
                     sendErrorToRemote("上传失败: " + error);
+                    // 即使失败也退回后台
+                    runOnUiThread(() -> returnToBackgroundIfRemoteWakeUp());
                 }
             });
         } else {
             AppLog.e(TAG, "钉钉服务未启动");
             sendErrorToRemote("钉钉服务未启动");
+            returnToBackgroundIfRemoteWakeUp();
         }
     }
 
@@ -962,6 +1065,7 @@ public class MainActivity extends AppCompatActivity {
         if (remoteRecordingTimestamp == null || remoteRecordingTimestamp.isEmpty()) {
             AppLog.e(TAG, "拍照时间戳为空，无法查找照片文件");
             sendErrorToRemote("拍照失败：时间戳丢失");
+            returnToBackgroundIfRemoteWakeUp();
             return;
         }
 
@@ -972,6 +1076,7 @@ public class MainActivity extends AppCompatActivity {
         if (!photoDir.exists() || !photoDir.isDirectory()) {
             AppLog.e(TAG, "照片目录不存在");
             sendErrorToRemote("照片目录不存在");
+            returnToBackgroundIfRemoteWakeUp();
             return;
         }
 
@@ -984,6 +1089,7 @@ public class MainActivity extends AppCompatActivity {
         if (files == null || files.length == 0) {
             AppLog.e(TAG, "没有找到时间戳为 " + remoteRecordingTimestamp + " 的照片文件（拍照可能失败）");
             sendErrorToRemote("拍照失败：未生成照片文件");
+            returnToBackgroundIfRemoteWakeUp();
             return;
         }
 
@@ -1006,18 +1112,25 @@ public class MainActivity extends AppCompatActivity {
                 @Override
                 public void onSuccess(String message) {
                     AppLog.d(TAG, message);
-                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "照片上传成功", Toast.LENGTH_SHORT).show());
+                    runOnUiThread(() -> {
+                        Toast.makeText(MainActivity.this, "照片上传成功", Toast.LENGTH_SHORT).show();
+                        // 上传完成后自动退回后台
+                        returnToBackgroundIfRemoteWakeUp();
+                    });
                 }
 
                 @Override
                 public void onError(String error) {
                     AppLog.e(TAG, "上传失败: " + error);
                     sendErrorToRemote("上传失败: " + error);
+                    // 即使失败也退回后台
+                    runOnUiThread(() -> returnToBackgroundIfRemoteWakeUp());
                 }
             });
         } else {
             AppLog.e(TAG, "钉钉服务未启动");
             sendErrorToRemote("钉钉服务未启动");
+            returnToBackgroundIfRemoteWakeUp();
         }
     }
 
@@ -1046,6 +1159,34 @@ public class MainActivity extends AppCompatActivity {
                 }
             }).start();
         }
+    }
+
+    /**
+     * 如果是远程唤醒的，完成后自动退回后台
+     * 延迟2秒后执行，让用户看到上传成功的提示
+     */
+    private void returnToBackgroundIfRemoteWakeUp() {
+        if (!isRemoteWakeUp) {
+            AppLog.d(TAG, "Not a remote wake-up, staying in foreground");
+            return;
+        }
+
+        AppLog.d(TAG, "Remote command completed, will return to background in 2 seconds");
+
+        // 延迟2秒后退回后台，让用户看到 Toast 提示
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+            // 重置标记
+            isRemoteWakeUp = false;
+
+            // 释放唤醒锁，让屏幕可以自然熄灭
+            WakeUpHelper.releaseWakeLock();
+
+            // 将应用退到后台
+            AppLog.d(TAG, "Moving task to back...");
+            moveTaskToBack(true);
+
+            AppLog.d(TAG, "Returned to background successfully");
+        }, 2000);
     }
 
     /**
@@ -1167,53 +1308,59 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onPause() {
         super.onPause();
+        isInBackground = true;
         AppLog.d(TAG, "onPause called, isRecording=" + isRecording);
         
-        // 在后台时，Android 11会禁用摄像头访问（policy限制）
-        // 需要停止所有重连尝试，避免无效的重连循环
+        // 根据是否正在录制，决定如何处理摄像头
         if (cameraManager != null) {
-            // 通知所有摄像头：不要再自动重连了（后台限制）
-            // 返回前台时会自动检查并重新连接
-            AppLog.w(TAG, "App entering background, cameras may be restricted by Android 11+ policy");
+            if (isRecording) {
+                // 正在录制：保持摄像头连接（有前台服务保护）
+                AppLog.d(TAG, "Recording in progress, keeping cameras connected (protected by foreground service)");
+            } else {
+                // 未录制：主动断开摄像头，避免后台拍照黑屏问题
+                AppLog.d(TAG, "Not recording, closing all cameras to avoid background issues");
+                cameraManager.closeAllCameras();
+            }
         }
-        
-        // 注意：暂时不主动关闭摄像头，因为：
-        // 1. 如果正在录制，需要保持（第二步会用前台服务保护）
-        // 2. 如果需要响应钉钉命令，也需要保持
-        // 但如果Android 11强制剥夺权限，会触发ERROR_CAMERA_DISABLED，此时会自动停止重连
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        AppLog.d(TAG, "onResume called");
+        boolean wasInBackground = isInBackground;
+        isInBackground = false;
+        AppLog.d(TAG, "onResume called, wasInBackground=" + wasInBackground + ", isRecording=" + isRecording);
+        
+        // 设置窗口属性，支持锁屏显示和唤醒屏幕
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true);
+            setTurnScreenOn(true);
+        } else {
+            getWindow().addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED |
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON |
+                WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+            );
+        }
         
         // 返回前台时，检查摄像头连接状态
-        if (cameraManager != null) {
-            // 延迟1秒后检查，给系统足够时间释放资源
+        if (cameraManager != null && wasInBackground) {
+            // 延迟500ms后重新打开摄像头
             new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
-                // 只在没有正在录制时检查（录制时摄像头应该保持连接）
+                // 只在没有正在录制时重新打开（录制时摄像头应该保持连接）
                 if (!isRecording) {
-                    int disconnectedCount = cameraManager.checkAndRepairCameras();
-                    if (disconnectedCount > 0) {
-                        // 延迟2秒后检查重连结果
-                        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
-                            int connectedCount = cameraManager.getConnectedCameraCount();
-                            if (connectedCount > 0) {
-                                runOnUiThread(() -> {
-                                    Toast.makeText(MainActivity.this, 
-                                        "摄像头已连接", 
-                                        Toast.LENGTH_SHORT).show();
-                                });
-                            }
-                        }, 2000);
-                    } else {
-                        AppLog.d(TAG, "All cameras are connected");
+                    AppLog.d(TAG, "Reopening cameras after returning from background");
+                    cameraManager.openAllCameras();
+                    
+                    // 检查是否有待处理的远程命令
+                    if (pendingRemoteCommand) {
+                        AppLog.d(TAG, "Has pending remote command, will execute after cameras ready");
+                        // 等待摄像头准备好后执行命令（在 handleRemoteCommand 中处理）
                     }
                 } else {
-                    AppLog.d(TAG, "Recording in progress, skipping camera check");
+                    AppLog.d(TAG, "Recording in progress, cameras should still be connected");
                 }
-            }, 1000);
+            }, 500);
         }
     }
 

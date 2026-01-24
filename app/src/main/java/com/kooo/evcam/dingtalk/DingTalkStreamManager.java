@@ -2,6 +2,7 @@ package com.kooo.evcam.dingtalk;
 
 
 import com.kooo.evcam.AppLog;
+import com.kooo.evcam.WakeUpHelper;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
@@ -281,11 +282,14 @@ public class DingTalkStreamManager {
                     String finalConversationId = conversationId;
                     String finalConversationType = conversationType;
                     String finalSenderId = senderId;
+                    int finalDuration = durationSeconds;
                     
                     sendResponseAndThen(sessionWebhook, confirmMsg, () -> {
-                        // 确认消息发送完成后，再执行录制命令
-                        mainHandler.post(() -> commandCallback.onRecordCommand(
-                            finalConversationId, finalConversationType, finalSenderId, durationSeconds));
+                        // 使用 WakeUpHelper 唤醒屏幕并启动 Activity
+                        // 这样可以确保在后台时也能正常录制
+                        AppLog.d(TAG, "使用 WakeUpHelper 启动录制...");
+                        WakeUpHelper.launchForRecording(context, 
+                            finalConversationId, finalConversationType, finalSenderId, finalDuration);
                     });
 
                 } else if ("拍照".equals(command) || "photo".equalsIgnoreCase(command)) {
@@ -297,9 +301,11 @@ public class DingTalkStreamManager {
                     String finalSenderId = senderId;
                     
                     sendResponseAndThen(sessionWebhook, "收到拍照指令，正在拍照...", () -> {
-                        // 确认消息发送完成后，再执行拍照命令
-                        mainHandler.post(() -> commandCallback.onPhotoCommand(
-                            finalConversationId, finalConversationType, finalSenderId));
+                        // 使用 WakeUpHelper 唤醒屏幕并启动 Activity
+                        // 这样可以确保在后台时也能正常拍照
+                        AppLog.d(TAG, "使用 WakeUpHelper 启动拍照...");
+                        WakeUpHelper.launchForPhoto(context, 
+                            finalConversationId, finalConversationType, finalSenderId);
                     });
 
                 } else if ("帮助".equals(command) || "help".equalsIgnoreCase(command)) {

@@ -1,10 +1,12 @@
 package com.kooo.evcam;
 
+import android.os.Build;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
@@ -24,6 +26,8 @@ public class SettingsFragment extends Fragment {
 
     private SwitchMaterial debugSwitch;
     private Button saveLogsButton;
+    private Button overlayPermissionButton;
+    private TextView overlayStatusText;
 
     @Nullable
     @Override
@@ -71,6 +75,57 @@ public class SettingsFragment extends Fragment {
             }
         });
 
+        // 初始化悬浮窗权限控件
+        overlayPermissionButton = view.findViewById(R.id.btn_overlay_permission);
+        overlayStatusText = view.findViewById(R.id.tv_overlay_status);
+
+        // 更新悬浮窗权限状态
+        updateOverlayPermissionStatus();
+
+        // 设置悬浮窗权限按钮监听器
+        overlayPermissionButton.setOnClickListener(v -> {
+            if (getContext() != null) {
+                if (WakeUpHelper.hasOverlayPermission(getContext())) {
+                    Toast.makeText(getContext(), "已授权悬浮窗权限", Toast.LENGTH_SHORT).show();
+                } else {
+                    WakeUpHelper.requestOverlayPermission(getContext());
+                    Toast.makeText(getContext(), "请在设置中授权悬浮窗权限", Toast.LENGTH_LONG).show();
+                }
+            }
+        });
+
         return view;
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        // 每次返回时更新权限状态
+        updateOverlayPermissionStatus();
+    }
+
+    /**
+     * 更新悬浮窗权限状态显示
+     */
+    private void updateOverlayPermissionStatus() {
+        if (getContext() == null || overlayStatusText == null || overlayPermissionButton == null) {
+            return;
+        }
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            // Android 6.0 以下不需要此权限
+            overlayStatusText.setText("系统版本低于 Android 6.0，无需授权");
+            overlayPermissionButton.setVisibility(View.GONE);
+        } else if (WakeUpHelper.hasOverlayPermission(getContext())) {
+            overlayStatusText.setText("已授权 ✓");
+            overlayStatusText.setTextColor(getResources().getColor(android.R.color.holo_green_dark, null));
+            overlayPermissionButton.setText("已授权");
+            overlayPermissionButton.setEnabled(false);
+        } else {
+            overlayStatusText.setText("未授权 - 后台钉钉命令需要此权限");
+            overlayStatusText.setTextColor(getResources().getColor(android.R.color.holo_orange_dark, null));
+            overlayPermissionButton.setText("去授权");
+            overlayPermissionButton.setEnabled(true);
+        }
     }
 }
