@@ -124,6 +124,24 @@
             </FrameLayout>
         </LinearLayout>
 
+        <!-- 录制状态显示（右上角） -->
+        <TextView
+            android:id="@+id/tv_recording_stats"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|end"
+            android:layout_marginTop="15dp"
+            android:layout_marginEnd="16dp"
+            android:background="@drawable/camera_label_background"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:paddingTop="6dp"
+            android:paddingBottom="6dp"
+            android:text="00:00 / 1"
+            android:textColor="#FFFFFF"
+            android:textSize="18sp"
+            android:visibility="gone" />
+
         <!-- Fragment container for playback -->
         <FrameLayout
             android:id="@+id/fragment_container"

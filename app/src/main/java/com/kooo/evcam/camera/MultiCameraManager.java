@@ -55,10 +55,16 @@ public class MultiCameraManager {
     public interface PreviewSizeCallback {
         void onPreviewSizeChosen(String cameraKey, String cameraId, Size previewSize);
     }
+    
+    public interface SegmentSwitchCallback {
+        void onSegmentSwitch(int newSegmentIndex);
+    }
 
     public MultiCameraManager(Context context) {
         this.context = context;
     }
+    
+    private SegmentSwitchCallback segmentSwitchCallback;
 
     public void setStatusCallback(StatusCallback callback) {
         this.statusCallback = callback;
@@ -66,6 +72,10 @@ public class MultiCameraManager {
 
     public void setPreviewSizeCallback(PreviewSizeCallback callback) {
         this.previewSizeCallback = callback;
+    }
+    
+    public void setSegmentSwitchCallback(SegmentSwitchCallback callback) {
+        this.segmentSwitchCallback = callback;
     }
 
     public void setMaxOpenCameras(int maxOpenCameras) {
@@ -357,6 +367,11 @@ public class MultiCameraManager {
                             camera.setRecordSurface(recorder.getSurface());
                             camera.recreateSession();
                             AppLog.d(TAG, "Recreated session for camera " + cameraId + " after segment switch");
+                        }
+                        
+                        // 通知分段切换回调（只通知一次，使用第一个摄像头的分段）
+                        if ("front".equals(key) && segmentSwitchCallback != null) {
+                            segmentSwitchCallback.onSegmentSwitch(newSegmentIndex);
                         }
                         break;
                     }
@@ -669,6 +684,11 @@ public class MultiCameraManager {
                 @Override
                 public void onSegmentSwitch(String cameraId, int newSegmentIndex) {
                     AppLog.d(TAG, "Codec segment switch for camera " + cameraId + " to segment " + newSegmentIndex);
+                    
+                    // 通知分段切换回调（只通知一次，使用第一个摄像头的分段）
+                    if ("front".equals(key) && segmentSwitchCallback != null) {
+                        segmentSwitchCallback.onSegmentSwitch(newSegmentIndex);
+                    }
                 }
             });
 

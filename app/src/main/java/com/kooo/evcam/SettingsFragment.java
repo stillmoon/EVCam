@@ -38,6 +38,7 @@ public class SettingsFragment extends Fragment {
     private Button saveLogsButton;
     private SwitchMaterial autoStartSwitch;
     private SwitchMaterial keepAliveSwitch;
+    private SwitchMaterial recordingStatsSwitch;
     private AppConfig appConfig;
     
     // 悬浮窗相关
@@ -157,6 +158,27 @@ public class SettingsFragment extends Fragment {
         // 初始化权限设置入口
         Button btnPermissionSettings = view.findViewById(R.id.btn_permission_settings);
         btnPermissionSettings.setOnClickListener(v -> openPermissionSettings());
+
+        // 初始化录制状态显示开关
+        recordingStatsSwitch = view.findViewById(R.id.switch_recording_stats);
+        if (getContext() != null && appConfig != null) {
+            recordingStatsSwitch.setChecked(appConfig.isRecordingStatsEnabled());
+        }
+
+        // 设置录制状态显示开关监听器
+        recordingStatsSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            if (getContext() != null && appConfig != null) {
+                appConfig.setRecordingStatsEnabled(isChecked);
+                String message = isChecked ? "录制状态显示已开启" : "录制状态显示已关闭";
+                Toast.makeText(getContext(), message, Toast.LENGTH_SHORT).show();
+                AppLog.d("SettingsFragment", message);
+                
+                // 通知 MainActivity 刷新设置
+                if (getActivity() instanceof MainActivity) {
+                    ((MainActivity) getActivity()).refreshRecordingStatsSettings();
+                }
+            }
+        });
 
         // 初始化开机自启动开关
         autoStartSwitch = view.findViewById(R.id.switch_auto_start);

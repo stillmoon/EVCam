@@ -92,6 +92,16 @@ public class MainActivity extends AppCompatActivity {
     private Runnable blinkRunnable;
     private boolean isBlinking = false;
 
+    // 录制状态显示相关
+    private TextView tvRecordingStats;
+    private android.os.Handler recordingTimerHandler;
+    private Runnable recordingTimerRunnable;
+    private long recordingStartTime = 0;  // 录制开始时间
+    private int currentSegmentCount = 1;  // 当前分段数
+    private boolean isRecordingStatsEnabled = true;  // 录制状态显示开关
+    private long lastStatsClickTime = 0;  // 上次点击录制状态显示的时间
+    private static final long DOUBLE_CLICK_INTERVAL = 500;  // 双击判定间隔（毫秒）
+
     // 导航相关
     private DrawerLayout drawerLayout;
     private NavigationView navigationView;
@@ -430,6 +440,10 @@ public class MainActivity extends AppCompatActivity {
         btnExit = findViewById(R.id.btn_exit);
         btnTakePhoto = findViewById(R.id.btn_take_photo);
         
+        // 初始化录制状态显示
+        tvRecordingStats = findViewById(R.id.tv_recording_stats);
+        initRecordingStatsDisplay();
+        
         // 更新摄像头标签（如果是自定义车型）
         updateCameraLabels();
 
@@ -534,6 +548,142 @@ public class MainActivity extends AppCompatActivity {
         } else {
             label.setText(name);
             label.setVisibility(View.VISIBLE);
+        }
+    }
+    
+    /**
+     * 初始化录制状态显示
+     */
+    private void initRecordingStatsDisplay() {
+        if (tvRecordingStats == null) {
+            return;
+        }
+        
+        // 从设置加载显示开关状态
+        isRecordingStatsEnabled = appConfig.isRecordingStatsEnabled();
+        
+        // 初始化计时器 Handler
+        recordingTimerHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+        
+        // 设置双击切换显示/隐藏
+        tvRecordingStats.setOnClickListener(v -> {
+            long currentTime = System.currentTimeMillis();
+            if (currentTime - lastStatsClickTime < DOUBLE_CLICK_INTERVAL) {
+                // 双击：切换显示状态
+                toggleRecordingStatsDisplay();
+                lastStatsClickTime = 0;  // 重置，避免三连击触发
+            } else {
+                lastStatsClickTime = currentTime;
+            }
+        });
+    }
+    
+    /**
+     * 切换录制状态显示的开关
+     */
+    private void toggleRecordingStatsDisplay() {
+        isRecordingStatsEnabled = !isRecordingStatsEnabled;
+        appConfig.setRecordingStatsEnabled(isRecordingStatsEnabled);
+        
+        if (isRecordingStatsEnabled) {
+            // 如果正在录制，显示状态
+            if (isRecording && tvRecordingStats != null) {
+                tvRecordingStats.setVisibility(View.VISIBLE);
+            }
+            Toast.makeText(this, "录制状态显示已开启", Toast.LENGTH_SHORT).show();
+        } else {
+            // 隐藏状态显示
+            if (tvRecordingStats != null) {
+                tvRecordingStats.setVisibility(View.GONE);
+            }
+            Toast.makeText(this, "录制状态显示已关闭", Toast.LENGTH_SHORT).show();
+        }
+        
+        AppLog.d(TAG, "录制状态显示切换: " + (isRecordingStatsEnabled ? "开启" : "关闭"));
+    }
+    
+    /**
+     * 开始录制计时器
+     */
+    private void startRecordingTimer() {
+        recordingStartTime = System.currentTimeMillis();
+        currentSegmentCount = 1;
+        
+        if (tvRecordingStats != null && isRecordingStatsEnabled) {
+            tvRecordingStats.setVisibility(View.VISIBLE);
+            updateRecordingStatsDisplay();
+        }
+        
+        // 创建定时更新任务
+        recordingTimerRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (isRecording) {
+                    updateRecordingStatsDisplay();
+                    recordingTimerHandler.postDelayed(this, 1000);  // 每秒更新一次
+                }
+            }
+        };
+        
+        recordingTimerHandler.post(recordingTimerRunnable);
+    }
+    
+    /**
+     * 停止录制计时器
+     */
+    private void stopRecordingTimer() {
+        if (recordingTimerHandler != null && recordingTimerRunnable != null) {
+            recordingTimerHandler.removeCallbacks(recordingTimerRunnable);
+        }
+        
+        // 隐藏录制状态显示
+        if (tvRecordingStats != null) {
+            tvRecordingStats.setVisibility(View.GONE);
+        }
+        
+        recordingStartTime = 0;
+        currentSegmentCount = 1;
+    }
+    
+    /**
+     * 更新录制状态显示
+     */
+    private void updateRecordingStatsDisplay() {
+        if (tvRecordingStats == null || !isRecordingStatsEnabled) {
+            return;
+        }
+        
+        // 计算录制时长
+        long elapsedMs = System.currentTimeMillis() - recordingStartTime;
+        long totalSeconds = elapsedMs / 1000;
+        long minutes = totalSeconds / 60;
+        long seconds = totalSeconds % 60;
+        
+        // 格式化时间：MM:SS / 分段数
+        String timeStr = String.format(java.util.Locale.getDefault(), "%02d:%02d / %d", minutes, seconds, currentSegmentCount);
+        tvRecordingStats.setText(timeStr);
+    }
+    
+    /**
+     * 当分段切换时调用，更新分段计数
+     */
+    public void onSegmentSwitch(int newSegmentIndex) {
+        currentSegmentCount = newSegmentIndex + 1;  // 分段索引从0开始，显示从1开始
+        AppLog.d(TAG, "分段切换: 第 " + currentSegmentCount + " 段");
+        
+        // 立即更新显示
+        runOnUiThread(this::updateRecordingStatsDisplay);
+    }
+    
+    /**
+     * 刷新录制状态显示设置（从设置界面返回时调用）
+     */
+    public void refreshRecordingStatsSettings() {
+        isRecordingStatsEnabled = appConfig.isRecordingStatsEnabled();
+        
+        // 如果正在录制，根据新设置显示或隐藏
+        if (isRecording && tvRecordingStats != null) {
+            tvRecordingStats.setVisibility(isRecordingStatsEnabled ? View.VISIBLE : View.GONE);
         }
     }
 
@@ -761,6 +911,11 @@ public class MainActivity extends AppCompatActivity {
                     }
                 });
             }
+        });
+
+        // 设置分段切换回调
+        cameraManager.setSegmentSwitchCallback(newSegmentIndex -> {
+            onSegmentSwitch(newSegmentIndex);
         });
 
         // 设置预览尺寸回调
@@ -1256,6 +1411,9 @@ public class MainActivity extends AppCompatActivity {
 
                 // 开始闪烁动画
                 startBlinkAnimation();
+                
+                // 启动录制计时器
+                startRecordingTimer();
 
                 // 发送录制状态广播（通知悬浮窗）
                 FloatingWindowService.sendRecordingStateChanged(this, true);
@@ -1278,6 +1436,9 @@ public class MainActivity extends AppCompatActivity {
 
             // 停止闪烁动画，恢复红色
             stopBlinkAnimation();
+            
+            // 停止录制计时器
+            stopRecordingTimer();
 
             // 发送录制状态广播（通知悬浮窗）
             FloatingWindowService.sendRecordingStateChanged(this, false);

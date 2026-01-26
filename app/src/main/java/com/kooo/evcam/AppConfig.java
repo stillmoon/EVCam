@@ -35,6 +35,17 @@ public class AppConfig {
     private static final String KEY_VIDEO_STORAGE_LIMIT_GB = "video_storage_limit_gb";  // 视频存储限制（GB）
     private static final String KEY_PHOTO_STORAGE_LIMIT_GB = "photo_storage_limit_gb";  // 图片存储限制（GB）
     
+    // 分段录制配置
+    private static final String KEY_SEGMENT_DURATION_MINUTES = "segment_duration_minutes";  // 分段时长（分钟）
+    
+    // 录制状态显示配置
+    private static final String KEY_RECORDING_STATS_ENABLED = "recording_stats_enabled";  // 录制状态显示开关
+    
+    // 分段时长常量（分钟）
+    public static final int SEGMENT_DURATION_1_MIN = 1;
+    public static final int SEGMENT_DURATION_3_MIN = 3;
+    public static final int SEGMENT_DURATION_5_MIN = 5;
+    
     // 悬浮窗大小常量
     public static final int FLOATING_SIZE_TINY = 32;        // 超小
     public static final int FLOATING_SIZE_EXTRA_SMALL = 40; // 特小
@@ -596,5 +607,52 @@ public class AppConfig {
      */
     public boolean isStorageCleanupEnabled() {
         return getVideoStorageLimitGb() > 0 || getPhotoStorageLimitGb() > 0;
+    }
+    
+    // ==================== 分段录制配置相关方法 ====================
+    
+    /**
+     * 设置分段时长（分钟）
+     * @param minutes 分段时长，单位分钟（1/3/5）
+     */
+    public void setSegmentDurationMinutes(int minutes) {
+        prefs.edit().putInt(KEY_SEGMENT_DURATION_MINUTES, minutes).apply();
+        AppLog.d(TAG, "分段时长设置: " + minutes + " 分钟");
+    }
+    
+    /**
+     * 获取分段时长（分钟）
+     * @return 分段时长，单位分钟，默认为1分钟
+     */
+    public int getSegmentDurationMinutes() {
+        return prefs.getInt(KEY_SEGMENT_DURATION_MINUTES, SEGMENT_DURATION_1_MIN);
+    }
+    
+    /**
+     * 获取分段时长（毫秒）
+     * @return 分段时长，单位毫秒
+     */
+    public long getSegmentDurationMs() {
+        return getSegmentDurationMinutes() * 60 * 1000L;
+    }
+    
+    // ==================== 录制状态显示配置相关方法 ====================
+    
+    /**
+     * 设置录制状态显示开关
+     * @param enabled true 表示显示录制时间和分段数
+     */
+    public void setRecordingStatsEnabled(boolean enabled) {
+        prefs.edit().putBoolean(KEY_RECORDING_STATS_ENABLED, enabled).apply();
+        AppLog.d(TAG, "录制状态显示设置: " + (enabled ? "显示" : "隐藏"));
+    }
+    
+    /**
+     * 获取录制状态显示开关状态
+     * @return true 表示显示录制时间和分段数
+     */
+    public boolean isRecordingStatsEnabled() {
+        // 默认开启录制状态显示
+        return prefs.getBoolean(KEY_RECORDING_STATS_ENABLED, true);
     }
 }
