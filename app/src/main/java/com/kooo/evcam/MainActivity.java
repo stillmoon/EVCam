@@ -39,6 +39,11 @@ import com.kooo.evcam.dingtalk.DingTalkConfig;
 import com.kooo.evcam.dingtalk.DingTalkStreamManager;
 import com.kooo.evcam.dingtalk.PhotoUploadService;
 import com.kooo.evcam.dingtalk.VideoUploadService;
+import com.kooo.evcam.telegram.TelegramApiClient;
+import com.kooo.evcam.telegram.TelegramBotManager;
+import com.kooo.evcam.telegram.TelegramConfig;
+import com.kooo.evcam.telegram.TelegramPhotoUploadService;
+import com.kooo.evcam.telegram.TelegramVideoUploadService;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -142,6 +147,12 @@ public class MainActivity extends AppCompatActivity {
     private DingTalkApiClient dingTalkApiClient;
     private DingTalkStreamManager dingTalkStreamManager;
     
+    // Telegram 服务相关
+    private TelegramConfig telegramConfig;
+    private TelegramApiClient telegramApiClient;
+    private TelegramBotManager telegramBotManager;
+    private long remoteTelegramChatId;  // Telegram Chat ID（用于远程命令）
+
     // 存储清理管理器
     private StorageCleanupManager storageCleanupManager;
 
@@ -174,6 +185,9 @@ public class MainActivity extends AppCompatActivity {
         // 初始化钉钉配置
         dingTalkConfig = new DingTalkConfig(this);
 
+        // 初始化Telegram配置
+        telegramConfig = new TelegramConfig(this);
+
         // 初始化自动停止 Handler
         autoStopHandler = new android.os.Handler(android.os.Looper.getMainLooper());
         
@@ -189,6 +203,11 @@ public class MainActivity extends AppCompatActivity {
         // 如果启用了自动启动，启动远程查看服务
         if (dingTalkConfig.isConfigured() && dingTalkConfig.isAutoStart()) {
             startDingTalkService();
+        }
+
+        // 如果启用了自动启动，启动 Telegram 服务
+        if (telegramConfig.isConfigured() && telegramConfig.isAutoStart()) {
+            startTelegramService();
         }
 
         // 启动定时保活任务（如果用户启用了）
@@ -295,11 +314,16 @@ public class MainActivity extends AppCompatActivity {
         showRecordingInterface();
         AppLog.d(TAG, "Switched to recording interface");
 
+        // 判断命令来源
+        String source = intent.getStringExtra("remote_source");
+        boolean isTelegram = "telegram".equals(source);
+
         // 提取参数
         String conversationId = intent.getStringExtra("remote_conversation_id");
         String conversationType = intent.getStringExtra("remote_conversation_type");
         String userId = intent.getStringExtra("remote_user_id");
         int duration = intent.getIntExtra("remote_duration", 60);
+        long telegramChatId = intent.getLongExtra("telegram_chat_id", 0);
 
         // 清除 Intent 中的命令，避免重复执行
         intent.removeExtra("remote_action");
@@ -329,7 +353,11 @@ public class MainActivity extends AppCompatActivity {
             // 检查摄像头是否准备好
             if (cameraManager == null) {
                 AppLog.e(TAG, "CameraManager is null");
-                executeRemoteCommand(action, conversationId, conversationType, userId, duration);
+                if (isTelegram) {
+                    executeRemoteCommandTelegram(action, telegramChatId, duration);
+                } else {
+                    executeRemoteCommand(action, conversationId, conversationType, userId, duration);
+                }
                 return;
             }
             
@@ -345,17 +373,25 @@ public class MainActivity extends AppCompatActivity {
                     if (finalCount < 4) {
                         AppLog.w(TAG, "Still only " + finalCount + " cameras ready, executing anyway");
                     }
-                    executeRemoteCommand(action, conversationId, conversationType, userId, duration);
+                    if (isTelegram) {
+                        executeRemoteCommandTelegram(action, telegramChatId, duration);
+                    } else {
+                        executeRemoteCommand(action, conversationId, conversationType, userId, duration);
+                    }
                 }, 1500);
             } else {
                 AppLog.d(TAG, "All 4 cameras ready, executing command");
-                executeRemoteCommand(action, conversationId, conversationType, userId, duration);
+                if (isTelegram) {
+                    executeRemoteCommandTelegram(action, telegramChatId, duration);
+                } else {
+                    executeRemoteCommand(action, conversationId, conversationType, userId, duration);
+                }
             }
         }, delay);
     }
 
     /**
-     * 执行远程命令
+     * 执行远程命令（钉钉）
      */
     private void executeRemoteCommand(String action, String conversationId, 
             String conversationType, String userId, int duration) {
@@ -412,6 +448,23 @@ public class MainActivity extends AppCompatActivity {
             moveTaskToBack(true);
             AppLog.d(TAG, "Moved to background");
         }, 1000);
+    }
+
+    /**
+     * 执行远程命令（Telegram）
+     */
+    private void executeRemoteCommandTelegram(String action, long chatId, int duration) {
+        AppLog.d(TAG, "Executing Telegram remote command: " + action + ", chatId=" + chatId);
+
+        if ("record".equals(action)) {
+            AppLog.d(TAG, "Starting Telegram remote recording for " + duration + " seconds");
+            startRemoteRecordingTelegram(chatId, duration);
+        } else if ("photo".equals(action)) {
+            AppLog.d(TAG, "Taking Telegram remote photo");
+            startRemotePhotoTelegram(chatId);
+        } else {
+            AppLog.w(TAG, "Unknown remote action: " + action);
+        }
     }
 
     private void adjustFontScale(float scale) {
@@ -847,8 +900,11 @@ public class MainActivity extends AppCompatActivity {
                 // 显示图片回看界面
                 showPhotoPlaybackInterface();
             } else if (itemId == R.id.nav_remote_view) {
-                // 显示远程查看界面
+                // 显示远程查看界面（钉钉）
                 showRemoteViewInterface();
+            } else if (itemId == R.id.nav_telegram) {
+                // 显示 Telegram 配置界面
+                showTelegramInterface();
             } else if (itemId == R.id.nav_settings) {
                 showSettingsInterface();
             }
@@ -1055,6 +1111,21 @@ public class MainActivity extends AppCompatActivity {
         FragmentManager fragmentManager = getSupportFragmentManager();
         FragmentTransaction transaction = fragmentManager.beginTransaction();
         transaction.replace(R.id.fragment_container, new RemoteViewFragment());
+        transaction.commit();
+    }
+
+    /**
+     * 显示 Telegram 配置界面
+     */
+    private void showTelegramInterface() {
+        // 隐藏录制布局，显示Fragment容器
+        recordingLayout.setVisibility(View.GONE);
+        fragmentContainer.setVisibility(View.VISIBLE);
+
+        // 显示TelegramFragment
+        FragmentManager fragmentManager = getSupportFragmentManager();
+        FragmentTransaction transaction = fragmentManager.beginTransaction();
+        transaction.replace(R.id.fragment_container, new TelegramFragment());
         transaction.commit();
     }
 
@@ -1440,7 +1511,7 @@ public class MainActivity extends AppCompatActivity {
             Toast.makeText(this, "没有可用的摄像头", Toast.LENGTH_SHORT).show();
         }
     }
-    
+
     /**
      * 手机模式：使用前后2个摄像头
      * 与银河E5不同，手机布局只有 textureFront 和 textureBack
@@ -1469,7 +1540,7 @@ public class MainActivity extends AppCompatActivity {
             Toast.makeText(this, "没有可用的摄像头", Toast.LENGTH_SHORT).show();
         }
     }
-    
+
     /**
      * 自定义车型：使用用户配置的摄像头映射
      */
@@ -2237,7 +2308,7 @@ public class MainActivity extends AppCompatActivity {
                     // 先保存恢复录制的标志，因为 uploadRecordedVideos 可能会 return
                     final boolean shouldResumeRecording = wasManualRecordingBeforeRemote;
                     wasManualRecordingBeforeRemote = false;  // 重置标志
-                    
+
                     // 尝试上传视频（可能因为找不到文件而提前返回）
                     try {
                         uploadRecordedVideos();
@@ -2256,7 +2327,7 @@ public class MainActivity extends AppCompatActivity {
                                 AppLog.d(TAG, "正在恢复手动录制...");
                                 startRecording();
                             } else {
-                                AppLog.d(TAG, "跳过恢复录制：isRemoteRecording=" + isRemoteRecording + 
+                                AppLog.d(TAG, "跳过恢复录制：isRemoteRecording=" + isRemoteRecording +
                                         ", isRecording=" + cameraManager.isRecording());
                             }
                         }, 500);
@@ -2330,6 +2401,264 @@ public class MainActivity extends AppCompatActivity {
         }, 5000);  // 等待5秒确保所有照片保存完成
     }
 
+    // ==================== Telegram 远程命令方法 ====================
+
+    /**
+     * 远程录制（由 Telegram 指令触发）
+     * 自动录制指定时长视频并上传到 Telegram
+     */
+    public void startRemoteRecordingTelegram(long chatId, int durationSeconds) {
+        this.remoteTelegramChatId = chatId;
+        // 清除钉钉相关变量
+        this.remoteConversationId = null;
+        this.remoteConversationType = null;
+        this.remoteUserId = null;
+
+        AppLog.d(TAG, "收到 Telegram 远程录制指令，开始录制 " + durationSeconds + " 秒视频...");
+
+        // 检查摄像头
+        if (cameraManager == null) {
+            AppLog.e(TAG, "摄像头管理器未初始化");
+            sendErrorToTelegram("摄像头未初始化");
+            returnToBackgroundIfRemoteWakeUp();
+            return;
+        }
+
+        if (!cameraManager.hasConnectedCameras()) {
+            AppLog.e(TAG, "没有可用的相机");
+            sendErrorToTelegram("没有可用的相机（可能在后台被限制）");
+            returnToBackgroundIfRemoteWakeUp();
+            return;
+        }
+
+        // 生成统一时间戳
+        remoteRecordingTimestamp = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.getDefault())
+                .format(new java.util.Date());
+        AppLog.d(TAG, "Telegram 录制统一时间戳: " + remoteRecordingTimestamp);
+
+        // 如果正在录制，先停止
+        if (cameraManager.isRecording()) {
+            cameraManager.stopRecording();
+            try {
+                Thread.sleep(500);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+
+        // 开始录制
+        boolean success = cameraManager.startRecording(remoteRecordingTimestamp);
+        if (success) {
+            AppLog.d(TAG, "Telegram 远程录制已开始");
+
+            // 启动前台服务保护
+            CameraForegroundService.start(this, "Telegram 远程录制进行中", "正在录制 " + durationSeconds + " 秒视频...");
+            FloatingWindowService.sendRecordingStateChanged(this, true);
+
+            // 设置自动停止
+            autoStopRunnable = () -> {
+                AppLog.d(TAG, durationSeconds + " 秒录制完成，正在停止...");
+                cameraManager.stopRecording();
+                CameraForegroundService.stop(this);
+                FloatingWindowService.sendRecordingStateChanged(this, false);
+
+                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                    uploadRecordedVideosTelegram();
+                }, 1000);
+            };
+
+            autoStopHandler.postDelayed(autoStopRunnable, durationSeconds * 1000L);
+        } else {
+            AppLog.e(TAG, "Telegram 远程录制启动失败");
+            sendErrorToTelegram("录制启动失败");
+            returnToBackgroundIfRemoteWakeUp();
+        }
+    }
+
+    /**
+     * 远程拍照（由 Telegram 指令触发）
+     */
+    public void startRemotePhotoTelegram(long chatId) {
+        this.remoteTelegramChatId = chatId;
+        this.remoteConversationId = null;
+        this.remoteConversationType = null;
+        this.remoteUserId = null;
+
+        AppLog.d(TAG, "收到 Telegram 远程拍照指令，开始拍照...");
+
+        if (cameraManager == null) {
+            AppLog.e(TAG, "摄像头管理器未初始化");
+            sendErrorToTelegram("摄像头未初始化");
+            returnToBackgroundIfRemoteWakeUp();
+            return;
+        }
+
+        if (!cameraManager.hasConnectedCameras()) {
+            AppLog.e(TAG, "没有可用的相机");
+            sendErrorToTelegram("没有可用的相机（可能在后台被限制）");
+            returnToBackgroundIfRemoteWakeUp();
+            return;
+        }
+
+        remoteRecordingTimestamp = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.getDefault())
+                .format(new java.util.Date());
+        AppLog.d(TAG, "Telegram 拍照统一时间戳: " + remoteRecordingTimestamp);
+
+        cameraManager.takePicture(remoteRecordingTimestamp);
+        AppLog.d(TAG, "Telegram 远程拍照已执行");
+
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+            uploadPhotosTelegram();
+        }, 5000);
+    }
+
+    /**
+     * 上传录制的视频到 Telegram
+     */
+    private void uploadRecordedVideosTelegram() {
+        AppLog.d(TAG, "开始上传视频到 Telegram...");
+
+        if (remoteRecordingTimestamp == null || remoteRecordingTimestamp.isEmpty()) {
+            AppLog.e(TAG, "录制时间戳为空");
+            sendErrorToTelegram("录制失败：时间戳丢失");
+            returnToBackgroundIfRemoteWakeUp();
+            return;
+        }
+
+        File videoDir = StorageHelper.getVideoDir(this);
+        if (!videoDir.exists() || !videoDir.isDirectory()) {
+            sendErrorToTelegram("视频目录不存在");
+            returnToBackgroundIfRemoteWakeUp();
+            return;
+        }
+
+        File[] files = videoDir.listFiles((dir, name) ->
+            name.endsWith(".mp4") && name.startsWith(remoteRecordingTimestamp + "_")
+        );
+
+        if (files == null || files.length == 0) {
+            sendErrorToTelegram("录制失败：未生成视频文件");
+            returnToBackgroundIfRemoteWakeUp();
+            return;
+        }
+
+        List<File> recentFiles = new ArrayList<>(Arrays.asList(files));
+        AppLog.d(TAG, "找到 " + recentFiles.size() + " 个视频文件");
+
+        if (telegramApiClient != null && remoteTelegramChatId != 0) {
+            TelegramVideoUploadService uploadService = new TelegramVideoUploadService(this, telegramApiClient);
+            uploadService.uploadVideos(recentFiles, remoteTelegramChatId, new TelegramVideoUploadService.UploadCallback() {
+                @Override
+                public void onProgress(String message) {
+                    AppLog.d(TAG, message);
+                }
+
+                @Override
+                public void onSuccess(String message) {
+                    AppLog.d(TAG, message);
+                    runOnUiThread(() -> {
+                        Toast.makeText(MainActivity.this, "视频上传成功", Toast.LENGTH_SHORT).show();
+                        returnToBackgroundIfRemoteWakeUp();
+                    });
+                }
+
+                @Override
+                public void onError(String error) {
+                    AppLog.e(TAG, "上传失败: " + error);
+                    sendErrorToTelegram("上传失败: " + error);
+                    runOnUiThread(() -> returnToBackgroundIfRemoteWakeUp());
+                }
+            });
+        } else {
+            AppLog.e(TAG, "Telegram 服务未启动");
+            sendErrorToTelegram("Telegram 服务未启动");
+            returnToBackgroundIfRemoteWakeUp();
+        }
+    }
+
+    /**
+     * 上传拍摄的照片到 Telegram
+     */
+    private void uploadPhotosTelegram() {
+        AppLog.d(TAG, "开始上传照片到 Telegram...");
+
+        if (remoteRecordingTimestamp == null || remoteRecordingTimestamp.isEmpty()) {
+            sendErrorToTelegram("拍照失败：时间戳丢失");
+            returnToBackgroundIfRemoteWakeUp();
+            return;
+        }
+
+        File photoDir = StorageHelper.getPhotoDir(this);
+        if (!photoDir.exists() || !photoDir.isDirectory()) {
+            sendErrorToTelegram("照片目录不存在");
+            returnToBackgroundIfRemoteWakeUp();
+            return;
+        }
+
+        File[] files = photoDir.listFiles((dir, name) ->
+            name.endsWith(".jpg") && name.startsWith(remoteRecordingTimestamp + "_")
+        );
+
+        if (files == null || files.length == 0) {
+            sendErrorToTelegram("拍照失败：未生成照片文件");
+            returnToBackgroundIfRemoteWakeUp();
+            return;
+        }
+
+        List<File> recentFiles = new ArrayList<>(Arrays.asList(files));
+        AppLog.d(TAG, "找到 " + recentFiles.size() + " 张照片");
+
+        if (telegramApiClient != null && remoteTelegramChatId != 0) {
+            TelegramPhotoUploadService uploadService = new TelegramPhotoUploadService(this, telegramApiClient);
+            uploadService.uploadPhotos(recentFiles, remoteTelegramChatId, new TelegramPhotoUploadService.UploadCallback() {
+                @Override
+                public void onProgress(String message) {
+                    AppLog.d(TAG, message);
+                }
+
+                @Override
+                public void onSuccess(String message) {
+                    AppLog.d(TAG, message);
+                    runOnUiThread(() -> {
+                        Toast.makeText(MainActivity.this, "照片上传成功", Toast.LENGTH_SHORT).show();
+                        returnToBackgroundIfRemoteWakeUp();
+                    });
+                }
+
+                @Override
+                public void onError(String error) {
+                    AppLog.e(TAG, "上传失败: " + error);
+                    sendErrorToTelegram("上传失败: " + error);
+                    runOnUiThread(() -> returnToBackgroundIfRemoteWakeUp());
+                }
+            });
+        } else {
+            sendErrorToTelegram("Telegram 服务未启动");
+            returnToBackgroundIfRemoteWakeUp();
+        }
+    }
+
+    /**
+     * 发送错误消息到 Telegram
+     */
+    private void sendErrorToTelegram(String error) {
+        if (remoteTelegramChatId == 0) {
+            return;
+        }
+
+        if (telegramApiClient != null) {
+            new Thread(() -> {
+                try {
+                    Thread.sleep(1000);
+                    telegramApiClient.sendMessage(remoteTelegramChatId, "❌ " + error);
+                    AppLog.d(TAG, "错误消息已发送到 Telegram");
+                } catch (Exception e) {
+                    AppLog.e(TAG, "发送 Telegram 错误消息失败", e);
+                }
+            }).start();
+        }
+    }
+
     /**
      * 上传录制的视频到钉钉
      * 优先从临时目录上传（内部存储，速度快），上传后再传输到最终存储位置
@@ -2349,7 +2678,7 @@ public class MainActivity extends AppCompatActivity {
         File tempDir = new File(getCacheDir(), FileTransferManager.TEMP_VIDEO_DIR);
         File[] tempFiles = null;
         if (tempDir.exists() && tempDir.isDirectory()) {
-            tempFiles = tempDir.listFiles((dir, name) -> 
+            tempFiles = tempDir.listFiles((dir, name) ->
                 name.endsWith(".mp4") && name.startsWith(remoteRecordingTimestamp + "_") && new File(dir, name).length() > 0
             );
         }
@@ -2372,7 +2701,7 @@ public class MainActivity extends AppCompatActivity {
                 return;
             }
 
-            File[] files = videoDir.listFiles((dir, name) -> 
+            File[] files = videoDir.listFiles((dir, name) ->
                 name.endsWith(".mp4") && name.startsWith(remoteRecordingTimestamp + "_")
             );
 
@@ -2409,12 +2738,12 @@ public class MainActivity extends AppCompatActivity {
                 @Override
                 public void onSuccess(String message) {
                     AppLog.d(TAG, message);
-                    
+
                     // 如果是从临时目录上传的，上传成功后传输到最终存储位置
                     if (uploadFromTempDir) {
                         transferTempFilesToFinalDir(uploadedFiles);
                     }
-                    
+
                     runOnUiThread(() -> {
                         Toast.makeText(MainActivity.this, "视频上传成功", Toast.LENGTH_SHORT).show();
                         // 上传完成后自动退回后台
@@ -2425,12 +2754,12 @@ public class MainActivity extends AppCompatActivity {
                 @Override
                 public void onError(String error) {
                     AppLog.e(TAG, "上传失败: " + error);
-                    
+
                     // 即使上传失败，也要传输文件到最终存储位置（保留视频）
                     if (uploadFromTempDir) {
                         transferTempFilesToFinalDir(uploadedFiles);
                     }
-                    
+
                     sendErrorToRemote("上传失败: " + error);
                     // 即使失败也退回后台
                     runOnUiThread(() -> returnToBackgroundIfRemoteWakeUp());
@@ -2438,12 +2767,12 @@ public class MainActivity extends AppCompatActivity {
             });
         } else {
             AppLog.e(TAG, "远程查看服务未启动");
-            
+
             // 即使远程查看服务未启动，也要传输文件到最终存储位置（保留视频）
             if (uploadFromTempDir) {
                 transferTempFilesToFinalDir(uploadedFiles);
             }
-            
+
             sendErrorToRemote("远程查看服务未启动");
             returnToBackgroundIfRemoteWakeUp();
         }
@@ -2899,6 +3228,127 @@ public class MainActivity extends AppCompatActivity {
         return dingTalkConfig;
     }
 
+    // ==================== Telegram 服务方法 ====================
+
+    /**
+     * 启动 Telegram Bot 服务
+     */
+    public void startTelegramService() {
+        if (telegramConfig == null) {
+            telegramConfig = new TelegramConfig(this);
+        }
+
+        if (!telegramConfig.isConfigured()) {
+            Toast.makeText(this, "请先配置 Telegram Bot Token", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if (telegramBotManager != null && telegramBotManager.isRunning()) {
+            AppLog.d(TAG, "Telegram 服务已在运行");
+            return;
+        }
+
+        AppLog.d(TAG, "正在启动 Telegram 服务...");
+
+        // 创建 API 客户端
+        telegramApiClient = new TelegramApiClient(telegramConfig);
+
+        // 创建连接回调
+        TelegramBotManager.ConnectionCallback connectionCallback = new TelegramBotManager.ConnectionCallback() {
+            @Override
+            public void onConnected() {
+                runOnUiThread(() -> {
+                    AppLog.d(TAG, "Telegram 服务已连接");
+                    Toast.makeText(MainActivity.this, "Telegram Bot 已启动", Toast.LENGTH_SHORT).show();
+                    updateTelegramFragmentUI();
+                });
+            }
+
+            @Override
+            public void onDisconnected() {
+                runOnUiThread(() -> {
+                    AppLog.d(TAG, "Telegram 服务已断开");
+                    updateTelegramFragmentUI();
+                });
+            }
+
+            @Override
+            public void onError(String error) {
+                runOnUiThread(() -> {
+                    AppLog.e(TAG, "Telegram 服务连接失败: " + error);
+                    Toast.makeText(MainActivity.this, "连接失败: " + error, Toast.LENGTH_LONG).show();
+                    updateTelegramFragmentUI();
+                });
+            }
+        };
+
+        // 创建指令回调
+        TelegramBotManager.CommandCallback commandCallback = new TelegramBotManager.CommandCallback() {
+            @Override
+            public void onRecordCommand(long chatId, int durationSeconds) {
+                startRemoteRecordingTelegram(chatId, durationSeconds);
+            }
+
+            @Override
+            public void onPhotoCommand(long chatId) {
+                startRemotePhotoTelegram(chatId);
+            }
+        };
+
+        // 创建并启动 Bot 管理器
+        telegramBotManager = new TelegramBotManager(this, telegramConfig, telegramApiClient, connectionCallback);
+        telegramBotManager.start(commandCallback);
+    }
+
+    /**
+     * 停止 Telegram Bot 服务
+     */
+    public void stopTelegramService() {
+        if (telegramBotManager != null) {
+            AppLog.d(TAG, "正在停止 Telegram 服务...");
+            telegramBotManager.stop();
+            telegramBotManager = null;
+            telegramApiClient = null;
+            Toast.makeText(this, "Telegram Bot 已停止", Toast.LENGTH_SHORT).show();
+            updateTelegramFragmentUI();
+        }
+    }
+
+    /**
+     * 获取 Telegram 服务运行状态
+     */
+    public boolean isTelegramServiceRunning() {
+        return telegramBotManager != null && telegramBotManager.isRunning();
+    }
+
+    /**
+     * 获取 Telegram API 客户端
+     */
+    public TelegramApiClient getTelegramApiClient() {
+        return telegramApiClient;
+    }
+
+    /**
+     * 获取 Telegram 配置
+     */
+    public TelegramConfig getTelegramConfig() {
+        if (telegramConfig == null) {
+            telegramConfig = new TelegramConfig(this);
+        }
+        return telegramConfig;
+    }
+
+    /**
+     * 通知 TelegramFragment 更新 UI
+     */
+    private void updateTelegramFragmentUI() {
+        FragmentManager fragmentManager = getSupportFragmentManager();
+        Fragment fragment = fragmentManager.findFragmentById(R.id.fragment_container);
+        if (fragment instanceof TelegramFragment) {
+            ((TelegramFragment) fragment).updateServiceStatus();
+        }
+    }
+
     /**
      * 获取当前录制状态（供外部查询）
      */
@@ -3046,7 +3496,12 @@ public class MainActivity extends AppCompatActivity {
         if (dingTalkStreamManager != null) {
             dingTalkStreamManager.stop();
         }
-        
+
+        // 停止 Telegram 服务
+        if (telegramBotManager != null) {
+            telegramBotManager.stop();
+        }
+
         // 停止存储清理任务
         if (storageCleanupManager != null) {
             storageCleanupManager.stop();

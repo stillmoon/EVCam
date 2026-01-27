@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.os.Bundle;
 
 import com.kooo.evcam.dingtalk.DingTalkConfig;
+import com.kooo.evcam.telegram.TelegramConfig;
 
 /**
  * 透明启动 Activity
@@ -58,7 +59,9 @@ public class TransparentBootActivity extends Activity {
         
         // 3. 检查是否需要启动远程查看服务
         DingTalkConfig dingTalkConfig = new DingTalkConfig(this);
-        if (dingTalkConfig.isConfigured() && dingTalkConfig.isAutoStart()) {
+        TelegramConfig telegramConfig = new TelegramConfig(this);
+        if ((dingTalkConfig.isConfigured() && dingTalkConfig.isAutoStart()) ||
+            (telegramConfig.isConfigured() && telegramConfig.isAutoStart())) {
             AppLog.d(TAG, "远程查看服务配置为自动启动，启动 MainActivity（后台模式）...");
             
             // 启动 MainActivity 初始化远程查看服务（后台模式）

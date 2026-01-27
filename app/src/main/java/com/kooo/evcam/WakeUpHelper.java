@@ -201,13 +201,67 @@ public class WakeUpHelper {
      * 启动 MainActivity 执行启动持续录制命令（等同点击录制按钮）
      */
     public static void launchForStartRecording(Context context) {
-        launchMainActivityWithCommand(context, "start_recording", null, null, null, 0);
+      launchMainActivityWithCommand(context, "start_recording", null, null, null, 0);
     }
 
     /**
      * 启动 MainActivity 执行停止录制命令
      */
     public static void launchForStopRecording(Context context) {
-        launchMainActivityWithCommand(context, "stop_recording", null, null, null, 0);
+      launchMainActivityWithCommand(context, "stop_recording", null, null, null, 0);
+    }
+
+    // ==================== Telegram 相关方法 ====================
+
+    /**
+     * 启动 MainActivity 执行 Telegram 录制命令
+     * @param context 上下文
+     * @param chatId Telegram Chat ID
+     * @param durationSeconds 录制时长
+     */
+    public static void launchForRecordingTelegram(Context context, long chatId, int durationSeconds) {
+        AppLog.d(TAG, "Launching MainActivity for Telegram recording: chatId=" + chatId + ", duration=" + durationSeconds);
+
+        // 获取CPU唤醒锁
+        acquireCpuWakeLock(context);
+
+        Intent intent = new Intent(context, MainActivity.class);
+        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK |
+                Intent.FLAG_ACTIVITY_CLEAR_TOP |
+                Intent.FLAG_ACTIVITY_SINGLE_TOP);
+
+        // 传递 Telegram 命令参数
+        intent.putExtra("remote_action", "record");
+        intent.putExtra("remote_source", "telegram");
+        intent.putExtra("telegram_chat_id", chatId);
+        intent.putExtra("remote_duration", durationSeconds);
+
+        context.startActivity(intent);
+        AppLog.d(TAG, "MainActivity launch intent sent for Telegram");
+    }
+
+    /**
+     * 启动 MainActivity 执行 Telegram 拍照命令
+     * @param context 上下文
+     * @param chatId Telegram Chat ID
+     */
+    public static void launchForPhotoTelegram(Context context, long chatId) {
+        AppLog.d(TAG, "Launching MainActivity for Telegram photo: chatId=" + chatId);
+
+        // 获取CPU唤醒锁
+        acquireCpuWakeLock(context);
+
+        Intent intent = new Intent(context, MainActivity.class);
+        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK |
+                Intent.FLAG_ACTIVITY_CLEAR_TOP |
+                Intent.FLAG_ACTIVITY_SINGLE_TOP);
+
+        // 传递 Telegram 命令参数
+        intent.putExtra("remote_action", "photo");
+        intent.putExtra("remote_source", "telegram");
+        intent.putExtra("telegram_chat_id", chatId);
+
+        context.startActivity(intent);
+        AppLog.d(TAG, "MainActivity launch intent sent for Telegram photo");
     }
 }

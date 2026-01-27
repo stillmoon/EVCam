@@ -15,7 +15,11 @@
     <item
         android:id="@+id/nav_remote_view"
         android:icon="@android:drawable/ic_menu_upload"
-        android:title="远程查看" />
+        android:title="钉钉远程" />
+    <item
+        android:id="@+id/nav_telegram"
+        android:icon="@android:drawable/ic_menu_send"
+        android:title="Telegram" />
     <item
         android:id="@+id/nav_settings"
         android:icon="@android:drawable/ic_menu_preferences"
