@@ -49,48 +49,81 @@ public class TelegramPhotoUploadService {
                 apiClient.sendChatAction(chatId, "upload_photo");
 
                 List<String> uploadedFiles = new ArrayList<>();
+                List<String> failedFiles = new ArrayList<>();
 
                 for (int i = 0; i < photoFiles.size(); i++) {
                     File photoFile = photoFiles.get(i);
 
                     if (!photoFile.exists()) {
                         AppLog.w(TAG, "图片文件不存在: " + photoFile.getPath());
+                        failedFiles.add(photoFile.getName() + " (文件不存在)");
                         continue;
                     }
 
                     callback.onProgress("正在上传 (" + (i + 1) + "/" + photoFiles.size() + "): " + photoFile.getName());
 
-                    try {
-                        // 发送 "正在上传照片" 状态
-                        apiClient.sendChatAction(chatId, "upload_photo");
+                    // 重试上传（最多2次，减少等待时间）
+                    boolean uploadSuccess = false;
+                    int retryCount = 0;
+                    int maxRetries = 2;
+                    String lastError = "";
 
-                        // 直接上传并发送图片
-                        String caption = "照片 " + (i + 1) + "/" + photoFiles.size();
-                        apiClient.sendPhoto(chatId, photoFile, caption);
+                    while (!uploadSuccess && retryCount < maxRetries) {
+                        try {
+                            if (retryCount > 0) {
+                                callback.onProgress("重试第 " + retryCount + " 次: " + photoFile.getName());
+                                Thread.sleep(1500); // 重试前等待1.5秒
+                            }
 
-                        uploadedFiles.add(photoFile.getName());
-                        AppLog.d(TAG, "图片上传成功: " + photoFile.getName());
+                            // 发送 "正在上传照片" 状态
+                            apiClient.sendChatAction(chatId, "upload_photo");
 
-                        // 延迟2秒后再上传下一张照片
-                        if (i < photoFiles.size() - 1) {
-                            callback.onProgress("等待2秒后上传下一张照片...");
-                            Thread.sleep(2000);
+                            // 直接上传并发送图片
+                            String caption = "照片 " + (i + 1) + "/" + photoFiles.size();
+                            apiClient.sendPhoto(chatId, photoFile, caption);
+
+                            uploadedFiles.add(photoFile.getName());
+                            AppLog.d(TAG, "图片上传成功: " + photoFile.getName());
+                            uploadSuccess = true;
+
+                        } catch (Exception e) {
+                            retryCount++;
+                            lastError = e.getMessage();
+                            AppLog.e(TAG, "上传图片失败 (尝试 " + retryCount + "/" + maxRetries + "): " + photoFile.getName(), e);
+
+                            if (retryCount >= maxRetries) {
+                                // 达到最大重试次数，记录到失败列表
+                                failedFiles.add(photoFile.getName() + " (" + (lastError != null ? lastError : "未知错误") + ")");
+                                break;
+                            }
                         }
+                    }
 
-                    } catch (Exception e) {
-                        AppLog.e(TAG, "上传图片失败: " + photoFile.getName(), e);
-                        callback.onError("上传失败: " + photoFile.getName() + " - " + e.getMessage());
+                    // 延迟500ms后再上传下一张照片
+                    if (i < photoFiles.size() - 1) {
+                        Thread.sleep(500);
                     }
                 }
 
+                // 统一处理上传结果
                 if (uploadedFiles.isEmpty()) {
-                    callback.onError("所有图片上传失败");
-                } else {
+                    // 所有文件都失败
+                    String errorMsg = "❌ 所有图片上传失败\n失败列表:\n" + String.join("\n", failedFiles);
+                    callback.onError(errorMsg);
+                    apiClient.sendMessage(chatId, errorMsg);
+                } else if (failedFiles.isEmpty()) {
+                    // 全部成功
                     String successMessage = "✅ 图片上传完成！共上传 " + uploadedFiles.size() + " 张照片";
                     callback.onSuccess(successMessage);
-
-                    // 发送完成消息
                     apiClient.sendMessage(chatId, successMessage);
+                } else {
+                    // 部分成功，部分失败
+                    String mixedMessage = "⚠️ 上传完成（部分失败）\n" +
+                            "成功: " + uploadedFiles.size() + " 张\n" +
+                            "失败: " + failedFiles.size() + " 张\n\n" +
+                            "失败列表:\n" + String.join("\n", failedFiles);
+                    callback.onSuccess(mixedMessage); // 仍然视为成功（至少有部分上传）
+                    apiClient.sendMessage(chatId, mixedMessage);
                 }
 
             } catch (Exception e) {

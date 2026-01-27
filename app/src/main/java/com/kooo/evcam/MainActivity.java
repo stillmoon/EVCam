@@ -156,6 +156,9 @@ public class MainActivity extends AppCompatActivity {
     // 存储清理管理器
     private StorageCleanupManager storageCleanupManager;
 
+    // 远程服务管理器（单例，保证服务不会因 Activity 重建而丢失）
+    private RemoteServiceManager remoteServiceManager;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -167,6 +170,9 @@ public class MainActivity extends AppCompatActivity {
         // 初始化应用配置
         appConfig = new AppConfig(this);
         
+        // 初始化远程服务管理器（单例）
+        remoteServiceManager = RemoteServiceManager.getInstance();
+
         // 重置U盘回退提示标志（每次冷启动重置）
         AppConfig.resetSdFallbackFlag();
         
@@ -203,11 +209,25 @@ public class MainActivity extends AppCompatActivity {
         // 如果启用了自动启动，启动远程查看服务
         if (dingTalkConfig.isConfigured() && dingTalkConfig.isAutoStart()) {
             startDingTalkService();
+        } else {
+            // 从 RemoteServiceManager 恢复已运行的服务实例
+            dingTalkStreamManager = remoteServiceManager.getDingTalkStreamManager();
+            dingTalkApiClient = remoteServiceManager.getDingTalkApiClient();
+            if (dingTalkStreamManager != null && dingTalkStreamManager.isRunning()) {
+                AppLog.d(TAG, "Restored running DingTalk service from RemoteServiceManager");
+            }
         }
 
         // 如果启用了自动启动，启动 Telegram 服务
         if (telegramConfig.isConfigured() && telegramConfig.isAutoStart()) {
             startTelegramService();
+        } else {
+            // 从 RemoteServiceManager 恢复已运行的服务实例
+            telegramBotManager = remoteServiceManager.getTelegramBotManager();
+            telegramApiClient = remoteServiceManager.getTelegramApiClient();
+            if (telegramBotManager != null && telegramBotManager.isRunning()) {
+                AppLog.d(TAG, "Restored running Telegram service from RemoteServiceManager");
+            }
         }
 
         // 启动定时保活任务（如果用户启用了）
@@ -232,6 +252,13 @@ public class MainActivity extends AppCompatActivity {
         
         // 启动文件传输服务（用于U盘中转写入模式）
         FileTransferManager.getInstance(this).start();
+
+        // 如果有任何远程服务在运行，启动前台服务保护应用进程
+        if (remoteServiceManager.hasAnyServiceRunning()) {
+            String content = remoteServiceManager.getServiceStatusDescription();
+            CameraForegroundService.start(this, "EVCam 后台服务", content);
+            AppLog.d(TAG, "Started foreground service to protect remote services: " + content);
+        }
 
         // 检查是否是开机自启动
         boolean autoStartFromBoot = getIntent().getBooleanExtra("auto_start_from_boot", false);
@@ -330,7 +357,7 @@ public class MainActivity extends AppCompatActivity {
 
         // 标记有待处理的远程命令
         pendingRemoteCommand = true;
-        
+
         // 判断是否应该在完成后返回后台
         // 只有当应用是从真正的后台被唤醒时才返回后台
         // 如果应用正在录制（非远程录制），说明用户正在使用，不应该返回后台
@@ -2315,11 +2342,11 @@ public class MainActivity extends AppCompatActivity {
                     } catch (Exception e) {
                         AppLog.e(TAG, "上传视频时发生异常: " + e.getMessage());
                     }
-                    
+
                     // 【重要】无论上传是否成功，都要检查是否需要恢复手动录制
                     if (shouldResumeRecording) {
                         AppLog.d(TAG, "远程录制任务完成，恢复之前的手动录制");
-                        
+
                         // 延迟一点时间再恢复，确保上传逻辑不受影响
                         new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
                             // 再次检查：确保此时不是远程录制状态，且没有正在录制
@@ -2609,27 +2636,50 @@ public class MainActivity extends AppCompatActivity {
         AppLog.d(TAG, "找到 " + recentFiles.size() + " 张照片");
 
         if (telegramApiClient != null && remoteTelegramChatId != 0) {
+            // 设置超时保护：5分钟后强制退回后台（避免卡死在前台）
+            final boolean[] uploadCompleted = {false};
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                if (!uploadCompleted[0]) {
+                    AppLog.w(TAG, "照片上传超时（5分钟），强制退回后台");
+                    runOnUiThread(() -> {
+                        Toast.makeText(MainActivity.this, "上传超时，已取消", Toast.LENGTH_SHORT).show();
+                        returnToBackgroundIfRemoteWakeUp();
+                    });
+                }
+            }, 5 * 60 * 1000); // 5分钟
+
             TelegramPhotoUploadService uploadService = new TelegramPhotoUploadService(this, telegramApiClient);
             uploadService.uploadPhotos(recentFiles, remoteTelegramChatId, new TelegramPhotoUploadService.UploadCallback() {
                 @Override
                 public void onProgress(String message) {
-                    AppLog.d(TAG, message);
+                    AppLog.d(TAG, "上传进度: " + message);
                 }
 
                 @Override
                 public void onSuccess(String message) {
-                    AppLog.d(TAG, message);
+                    uploadCompleted[0] = true; // 标记上传完成
+                    AppLog.d(TAG, "上传成功: " + message);
                     runOnUiThread(() -> {
                         Toast.makeText(MainActivity.this, "照片上传成功", Toast.LENGTH_SHORT).show();
-                        returnToBackgroundIfRemoteWakeUp();
+                        // 延长退回后台的时间，确保用户能看到提示
+                        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                            returnToBackgroundIfRemoteWakeUp();
+                        }, 3000); // 延迟3秒
                     });
                 }
 
                 @Override
                 public void onError(String error) {
+                    uploadCompleted[0] = true; // 标记上传完成（失败也算完成）
+                    // 所有错误（包括超时）都需要退回后台
                     AppLog.e(TAG, "上传失败: " + error);
-                    sendErrorToTelegram("上传失败: " + error);
-                    runOnUiThread(() -> returnToBackgroundIfRemoteWakeUp());
+                    runOnUiThread(() -> {
+                        Toast.makeText(MainActivity.this, "照片上传失败", Toast.LENGTH_SHORT).show();
+                        // 短暂延迟后退回后台
+                        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                            returnToBackgroundIfRemoteWakeUp();
+                        }, 2000);
+                    });
                 }
             });
         } else {
@@ -3037,6 +3087,14 @@ public class MainActivity extends AppCompatActivity {
         // 创建并启动 Stream 管理器（启用自动重连）
         dingTalkStreamManager = new DingTalkStreamManager(this, dingTalkConfig, dingTalkApiClient, connectionCallback);
         dingTalkStreamManager.start(commandCallback, true); // 启用自动重连
+
+        // 注册到 RemoteServiceManager，避免 Activity 重建时丢失
+        remoteServiceManager.setDingTalkService(dingTalkStreamManager, dingTalkApiClient);
+
+        // 启动前台服务保护（当有远程服务运行时）
+        String content = remoteServiceManager.getServiceStatusDescription();
+        CameraForegroundService.start(this, "EVCam 后台服务", content);
+        AppLog.d(TAG, "Started foreground service to protect DingTalk service");
     }
 
     /**
@@ -3048,9 +3106,19 @@ public class MainActivity extends AppCompatActivity {
             dingTalkStreamManager.stop();
             dingTalkStreamManager = null;
             dingTalkApiClient = null;
+
+            // 从 RemoteServiceManager 中清除服务引用
+            remoteServiceManager.clearDingTalkService();
+
             Toast.makeText(this, "远程查看服务已停止", Toast.LENGTH_SHORT).show();
             // 通知 RemoteViewFragment 更新 UI
             updateRemoteViewFragmentUI();
+
+            // 如果没有其他远程服务在运行，停止前台服务
+            if (!remoteServiceManager.hasAnyServiceRunning()) {
+                CameraForegroundService.stop(this);
+                AppLog.d(TAG, "No remote services running, stopped foreground service");
+            }
         }
     }
 
@@ -3058,7 +3126,12 @@ public class MainActivity extends AppCompatActivity {
      * 获取远程查看服务运行状态
      */
     public boolean isDingTalkServiceRunning() {
-        return dingTalkStreamManager != null && dingTalkStreamManager.isRunning();
+        // 优先检查本地实例
+        if (dingTalkStreamManager != null && dingTalkStreamManager.isRunning()) {
+            return true;
+        }
+        // 如果本地实例为空，检查 RemoteServiceManager（可能 Activity 刚重建）
+        return remoteServiceManager != null && remoteServiceManager.isDingTalkRunning();
     }
 
     /**
@@ -3298,6 +3371,14 @@ public class MainActivity extends AppCompatActivity {
         // 创建并启动 Bot 管理器
         telegramBotManager = new TelegramBotManager(this, telegramConfig, telegramApiClient, connectionCallback);
         telegramBotManager.start(commandCallback);
+
+        // 注册到 RemoteServiceManager，避免 Activity 重建时丢失
+        remoteServiceManager.setTelegramService(telegramBotManager, telegramApiClient);
+
+        // 启动前台服务保护（当有远程服务运行时）
+        String content = remoteServiceManager.getServiceStatusDescription();
+        CameraForegroundService.start(this, "EVCam 后台服务", content);
+        AppLog.d(TAG, "Started foreground service to protect Telegram service");
     }
 
     /**
@@ -3309,8 +3390,18 @@ public class MainActivity extends AppCompatActivity {
             telegramBotManager.stop();
             telegramBotManager = null;
             telegramApiClient = null;
+
+            // 从 RemoteServiceManager 中清除服务引用
+            remoteServiceManager.clearTelegramService();
+
             Toast.makeText(this, "Telegram Bot 已停止", Toast.LENGTH_SHORT).show();
             updateTelegramFragmentUI();
+
+            // 如果没有其他远程服务在运行，停止前台服务
+            if (!remoteServiceManager.hasAnyServiceRunning()) {
+                CameraForegroundService.stop(this);
+                AppLog.d(TAG, "No remote services running, stopped foreground service");
+            }
         }
     }
 
@@ -3318,7 +3409,12 @@ public class MainActivity extends AppCompatActivity {
      * 获取 Telegram 服务运行状态
      */
     public boolean isTelegramServiceRunning() {
-        return telegramBotManager != null && telegramBotManager.isRunning();
+        // 优先检查本地实例
+        if (telegramBotManager != null && telegramBotManager.isRunning()) {
+            return true;
+        }
+        // 如果本地实例为空，检查 RemoteServiceManager（可能 Activity 刚重建）
+        return remoteServiceManager != null && remoteServiceManager.isTelegramRunning();
     }
 
     /**
@@ -3422,6 +3518,32 @@ public class MainActivity extends AppCompatActivity {
             FloatingWindowService.sendAppForegroundState(this, true);
         }
         
+        // 恢复录制状态 UI（如果正在录制）
+        if (isRecording && wasInBackground) {
+            AppLog.d(TAG, "Restoring recording UI state");
+            // 恢复按钮闪烁动画
+            if (!isBlinking) {
+                startBlinkAnimation();
+            }
+            // 恢复录制计时器显示
+            if (recordingStartTime > 0 && tvRecordingStats != null) {
+                tvRecordingStats.setVisibility(View.VISIBLE);
+                tvRecordingStats.setAlpha(isRecordingStatsEnabled ? 1.0f : 0.0f);
+                // 重启计时器更新
+                if (recordingTimerHandler != null && recordingTimerRunnable != null) {
+                    recordingTimerHandler.removeCallbacks(recordingTimerRunnable);
+                    recordingTimerHandler.post(recordingTimerRunnable);
+                }
+            }
+            // 广播当前录制状态（更新悬浮窗）
+            FloatingWindowService.sendRecordingStateChanged(this, true);
+        } else if (!isRecording) {
+            // 确保按钮显示为未录制状态
+            if (isBlinking) {
+                stopBlinkAnimation();
+            }
+        }
+
         // 返回前台时，检查摄像头连接状态
         if (cameraManager != null && wasInBackground) {
             // 延迟500ms后重新打开摄像头
@@ -3456,8 +3578,54 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
+    protected void onSaveInstanceState(@NonNull Bundle outState) {
+        super.onSaveInstanceState(outState);
+        // 保存关键状态
+        outState.putBoolean("isRecording", isRecording);
+        outState.putBoolean("isInBackground", isInBackground);
+        outState.putBoolean("isRemoteWakeUp", isRemoteWakeUp);
+        outState.putBoolean("pendingRemoteCommand", pendingRemoteCommand);
+
+        // 保存录制相关状态
+        outState.putLong("recordingStartTime", recordingStartTime);
+        outState.putInt("currentSegmentCount", currentSegmentCount);
+        outState.putBoolean("isRecordingStatsEnabled", isRecordingStatsEnabled);
+
+        // 保存服务运行状态
+        boolean isDingTalkRunning = dingTalkStreamManager != null && dingTalkStreamManager.isRunning();
+        boolean isTelegramRunning = telegramBotManager != null && telegramBotManager.isRunning();
+        outState.putBoolean("isDingTalkRunning", isDingTalkRunning);
+        outState.putBoolean("isTelegramRunning", isTelegramRunning);
+
+        AppLog.d(TAG, "State saved - isRecording=" + isRecording +
+                ", recordingStartTime=" + recordingStartTime +
+                ", dingTalk=" + isDingTalkRunning + ", telegram=" + isTelegramRunning);
+    }
+
+    @Override
+    protected void onRestoreInstanceState(@NonNull Bundle savedInstanceState) {
+        super.onRestoreInstanceState(savedInstanceState);
+        // 恢复关键状态
+        isRecording = savedInstanceState.getBoolean("isRecording", false);
+        isInBackground = savedInstanceState.getBoolean("isInBackground", false);
+        isRemoteWakeUp = savedInstanceState.getBoolean("isRemoteWakeUp", false);
+        pendingRemoteCommand = savedInstanceState.getBoolean("pendingRemoteCommand", false);
+
+        // 恢复录制相关状态
+        recordingStartTime = savedInstanceState.getLong("recordingStartTime", 0);
+        currentSegmentCount = savedInstanceState.getInt("currentSegmentCount", 1);
+        isRecordingStatsEnabled = savedInstanceState.getBoolean("isRecordingStatsEnabled", true);
+
+        AppLog.d(TAG, "State restored - isRecording=" + isRecording +
+                ", recordingStartTime=" + recordingStartTime +
+                ", isInBackground=" + isInBackground);
+    }
+
+    @Override
     protected void onDestroy() {
         super.onDestroy();
+
+        AppLog.d(TAG, "onDestroy called, isFinishing=" + isFinishing());
 
         // 取消自动停止录制的任务
         if (autoStopHandler != null && autoStopRunnable != null) {
@@ -3489,29 +3657,53 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        // 停止前台服务（确保清理）
-        CameraForegroundService.stop(this);
+        // 只有在真正销毁时才停止服务（用户主动退出或系统杀进程）
+        // 如果只是配置变更（如屏幕旋转）或被系统临时回收，则保留服务在后台运行
+        if (isFinishing()) {
+            AppLog.d(TAG, "Activity is finishing, stopping all services");
 
-        // 停止远程查看服务
-        if (dingTalkStreamManager != null) {
-            dingTalkStreamManager.stop();
-        }
+            // 停止前台服务
+            CameraForegroundService.stop(this);
 
-        // 停止 Telegram 服务
-        if (telegramBotManager != null) {
-            telegramBotManager.stop();
-        }
+            // 停止远程查看服务
+            if (dingTalkStreamManager != null) {
+                dingTalkStreamManager.stop();
+            }
 
-        // 停止存储清理任务
-        if (storageCleanupManager != null) {
-            storageCleanupManager.stop();
-        }
-        
-        // 停止文件传输服务
-        FileTransferManager.getInstance(this).stop();
+            // 停止 Telegram 服务
+            if (telegramBotManager != null) {
+                telegramBotManager.stop();
+            }
 
-        if (cameraManager != null) {
-            cameraManager.release();
+            // 从 RemoteServiceManager 中清除所有服务
+            remoteServiceManager.stopAllServices();
+
+            // 停止存储清理任务
+            if (storageCleanupManager != null) {
+                storageCleanupManager.stop();
+            }
+
+            // 停止文件传输服务
+            FileTransferManager.getInstance(this).stop();
+
+            if (cameraManager != null) {
+                cameraManager.release();
+            }
+        } else {
+            AppLog.d(TAG, "Activity destroyed but not finishing - keeping services alive");
+            // Activity 被系统回收但应用仍在后台运行
+            // 保留远程服务和前台服务继续运行
+            // 只释放 UI 相关的资源
+
+            // 释放摄像头资源（UI 资源）
+            if (cameraManager != null && !isRecording) {
+                // 如果没有在录制，可以释放摄像头
+                // 录制中的摄像头由前台服务保护，不释放
+                cameraManager.closeAllCameras();
+                AppLog.d(TAG, "Closed cameras (not recording)");
+            } else if (isRecording) {
+                AppLog.d(TAG, "Recording in progress - keeping cameras (protected by foreground service)");
+            }
         }
         
         // 重置自动录制触发标志（下次启动时可以再次触发）

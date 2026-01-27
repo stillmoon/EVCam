@@ -32,9 +32,9 @@ public class TelegramApiClient {
         this.config = config;
         this.gson = new Gson();
         this.httpClient = new OkHttpClient.Builder()
-                .connectTimeout(30, TimeUnit.SECONDS)
-                .readTimeout(60, TimeUnit.SECONDS)  // Long Polling 需要较长的超时
-                .writeTimeout(60, TimeUnit.SECONDS)
+                .connectTimeout(15, TimeUnit.SECONDS)  // 连接超时15秒
+                .readTimeout(45, TimeUnit.SECONDS)     // 读取超时45秒
+                .writeTimeout(60, TimeUnit.SECONDS)    // 写入超时60秒（文件上传）
                 .build();
     }
 
