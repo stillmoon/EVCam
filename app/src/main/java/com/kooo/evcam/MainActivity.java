@@ -3501,74 +3501,68 @@ public class MainActivity extends AppCompatActivity {
         AppLog.d(TAG, "onDestroy called, isFinishing=" + isFinishing());
 
         // 取消自动停止录制的任务
-        if (autoStopHandler != null && autoStopRunnable != null) {
-            autoStopHandler.removeCallbacks(autoStopRunnable);
-        }
+//        if (autoStopHandler != null && autoStopRunnable != null) {
+//            autoStopHandler.removeCallbacks(autoStopRunnable);
+//        }
         
         // 重置远程录制状态
-        isRemoteRecording = false;
-        wasManualRecordingBeforeRemote = false;
+//        isRemoteRecording = false;
+//        wasManualRecordingBeforeRemote = false;
         
         // 清理息屏录制相关资源
-        if (screenStateReceiver != null) {
-            try {
-                unregisterReceiver(screenStateReceiver);
-            } catch (Exception e) {
-                AppLog.w(TAG, "注销息屏广播接收器时出错: " + e.getMessage());
-            }
-            screenStateReceiver = null;
+//        if (screenStateReceiver != null) {
+//            try {
+//                unregisterReceiver(screenStateReceiver);
+//            } catch (Exception e) {
+//                AppLog.w(TAG, "注销息屏广播接收器时出错: " + e.getMessage());
+//            }
+//            screenStateReceiver = null;
+//        }
+//        if (screenStateHandler != null) {
+//            if (screenOffStopRunnable != null) {
+//                screenStateHandler.removeCallbacks(screenOffStopRunnable);
+//            }
+//            if (screenOnStartRunnable != null) {
+//                screenStateHandler.removeCallbacks(screenOnStartRunnable);
+//            }
+//            if (screenOffBackgroundRunnable != null) {
+//                screenStateHandler.removeCallbacks(screenOffBackgroundRunnable);
+//            }
+//        }
+
+        // 【修复】不依赖 isFinishing() 判断是否停止服务
+        // 在某些深度定制的 Android 系统（如车机系统）上，当应用切换到后台时，
+        // Activity 可能被系统强杀，此时 isFinishing() 可能返回 true，
+        // 但远程服务和前台服务应该继续运行
+        //
+        // 新策略：
+        // 1. 只释放 UI 相关资源（摄像头预览等）
+        // 2. 远程服务和前台服务由 RemoteServiceManager 单例持有，不会被回收
+        // 3. 只有用户明确停止服务时才真正停止（通过 stopDingTalkService/stopTelegramService）
+        // 4. 停止存储清理任务和文件传输等后台任务仍然保留（它们依赖 Activity 生命周期较弱）
+
+        AppLog.d(TAG, "Activity destroyed - releasing UI resources but keeping remote services alive");
+
+        // 释放摄像头资源（UI 资源）
+        if (cameraManager != null && !isRecording) {
+            // 如果没有在录制，可以释放摄像头
+            // 录制中的摄像头由前台服务保护，不释放
+            cameraManager.closeAllCameras();
+            AppLog.d(TAG, "Closed cameras (not recording)");
+        } else if (isRecording) {
+            AppLog.d(TAG, "Recording in progress - keeping cameras (protected by foreground service)");
         }
-        if (screenStateHandler != null) {
-            if (screenOffStopRunnable != null) {
-                screenStateHandler.removeCallbacks(screenOffStopRunnable);
-            }
-            if (screenOnStartRunnable != null) {
-                screenStateHandler.removeCallbacks(screenOnStartRunnable);
-            }
-            if (screenOffBackgroundRunnable != null) {
-                screenStateHandler.removeCallbacks(screenOffBackgroundRunnable);
-            }
-        }
 
-        // 只有在真正销毁时才停止服务（用户主动退出或系统杀进程）
-        // 如果只是配置变更（如屏幕旋转）或被系统临时回收，则保留服务在后台运行
-        if (isFinishing()) {
-            AppLog.d(TAG, "Activity is finishing, stopping all services");
+        // 注意：不再调用以下代码，让服务继续在后台运行
+        // - CameraForegroundService.stop(this)  // 前台服务继续运行
+        // - remoteServiceManager.stopAllServices()  // 远程服务继续运行
+        // - storageCleanupManager.stop()  // 存储清理继续运行
+        // - FileTransferManager.getInstance(this).stop()  // 文件传输继续运行
 
-            // 停止前台服务
-            CameraForegroundService.stop(this);
+        // 远程服务会在以下情况停止：
+        // 1. 用户在设置中明确点击"停止服务"
+        // 2. 应用进程被系统完全杀死（此时所有资源都会被释放）
 
-            // 从 RemoteServiceManager 中清除所有服务
-            remoteServiceManager.stopAllServices();
-
-            // 停止存储清理任务
-            if (storageCleanupManager != null) {
-                storageCleanupManager.stop();
-            }
-
-            // 停止文件传输服务
-            FileTransferManager.getInstance(this).stop();
-
-            if (cameraManager != null) {
-                cameraManager.release();
-            }
-        } else {
-            AppLog.d(TAG, "Activity destroyed but not finishing - keeping services alive");
-            // Activity 被系统回收但应用仍在后台运行
-            // 保留远程服务和前台服务继续运行
-            // 只释放 UI 相关的资源
-
-            // 释放摄像头资源（UI 资源）
-            if (cameraManager != null && !isRecording) {
-                // 如果没有在录制，可以释放摄像头
-                // 录制中的摄像头由前台服务保护，不释放
-                cameraManager.closeAllCameras();
-                AppLog.d(TAG, "Closed cameras (not recording)");
-            } else if (isRecording) {
-                AppLog.d(TAG, "Recording in progress - keeping cameras (protected by foreground service)");
-            }
-        }
-        
         // 重置自动录制触发标志（下次启动时可以再次触发）
         autoStartRecordingTriggered = false;
     }

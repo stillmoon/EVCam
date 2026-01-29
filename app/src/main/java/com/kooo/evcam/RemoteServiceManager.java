@@ -13,21 +13,37 @@ import com.kooo.evcam.telegram.TelegramConfig;
  * 远程服务管理器（单例）
  * 管理钉钉和 Telegram 服务的生命周期，确保在 Activity 重建时服务不会中断
  * 这个类持有服务实例的强引用，避免被垃圾回收
+ *
+ * 【重要】服务持久化策略：
+ * 1. 单例模式确保服务实例在应用进程存活期间始终可用
+ * 2. 即使 MainActivity 被系统杀死，只要进程还在，服务就继续运行
+ * 3. 配合 CameraForegroundService（前台服务）提升进程优先级，降低被杀概率
+ * 4. 服务只在以下情况停止：
+ *    - 用户明确调用 stopDingTalkService() / stopTelegramService()
+ *    - 用户退出应用（exitApp()）
+ *    - 应用进程被系统完全杀死（此时所有资源都被回收）
+ *
+ * 【车机系统适配】
+ * - 不依赖 Activity.isFinishing() 判断服务是否停止
+ * - 某些深度定制的 Android 系统（如车机系统）在后台强杀 Activity 时
+ *   isFinishing() 可能错误返回 true，导致误判为用户主动退出
+ * - 新策略：服务生命周期与 Activity 生命周期完全解耦
  */
 public class RemoteServiceManager {
     private static final String TAG = "RemoteServiceManager";
     private static RemoteServiceManager instance;
 
-    // 钉钉服务
+    // 钉钉服务（强引用，避免被 GC）
     private DingTalkStreamManager dingTalkStreamManager;
     private DingTalkApiClient dingTalkApiClient;
 
-    // Telegram 服务
+    // Telegram 服务（强引用，避免被 GC）
     private TelegramBotManager telegramBotManager;
     private TelegramApiClient telegramApiClient;
 
     private RemoteServiceManager() {
-        // 私有构造函数
+        // 私有构造函数，确保单例
+        AppLog.d(TAG, "RemoteServiceManager instance created");
     }
 
     public static synchronized RemoteServiceManager getInstance() {
